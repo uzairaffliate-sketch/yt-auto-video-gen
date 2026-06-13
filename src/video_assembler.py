@@ -18,7 +18,7 @@ from moviepy.editor import (
     vfx,
 )
 from moviepy.video.fx.resize import resize
-from moviepy.video.fx.crop import crop_to_aspect_ratio
+# ❌ Removed: from moviepy.video.fx.crop import crop_to_aspect_ratio
 
 logger = logging.getLogger(__name__)
 
