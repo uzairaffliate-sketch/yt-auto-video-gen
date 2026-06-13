@@ -29,6 +29,7 @@ on:
         options:
           - 'tts'
           - 'custom_audio'
+          - 'no_audio'          # ✅ Added
       audio_url:
         description: 'Custom audio URL (if voiceover_type=custom_audio)'
         required: false
@@ -37,7 +38,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max for extremely long videos
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
