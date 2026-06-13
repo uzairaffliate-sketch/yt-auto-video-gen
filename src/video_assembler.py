@@ -9,6 +9,11 @@ import random
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
+# ✅ Patch Pillow ANTIALIAS for newer versions (removed in Pillow 10+)
+import PIL.Image
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+
 from moviepy.editor import (
     VideoFileClip,
     ImageClip,
@@ -18,7 +23,6 @@ from moviepy.editor import (
     vfx,
 )
 from moviepy.video.fx.resize import resize
-# ❌ Removed: from moviepy.video.fx.crop import crop_to_aspect_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +37,6 @@ DEFAULT_SCENE_DURATION = 5.0  # seconds
 
 
 def _apply_transition(clip, transition_name: str, duration: float = TRANSITION_DURATION):
-    """
-    Apply a transition effect to the start of a clip.
-    Returns a modified clip.
-    """
     if transition_name == "fade":
         return clip.crossfadein(duration)
     elif transition_name == "slide_left":
@@ -44,10 +44,8 @@ def _apply_transition(clip, transition_name: str, duration: float = TRANSITION_D
     elif transition_name == "slide_right":
         return clip.fx(vfx.slide_in, duration, "right")
     elif transition_name == "zoom_in":
-        return clip.fx(vfx.resize, lambda t: 1 + 0.1 * t)  # subtle zoom in over duration
+        return clip.fx(vfx.resize, lambda t: 1 + 0.1 * t)
     elif transition_name == "crossfade":
-        # crossfadein works as fade in from black, but crossfade between clips is handled differently.
-        # For simplicity, we'll use fadein here, actual crossfade requires overlapping clips.
         return clip.crossfadein(duration)
     else:
         return clip
@@ -60,11 +58,6 @@ def _prepare_clip(
     transition: str = "fade",
     is_first: bool = False,
 ) -> VideoFileClip:
-    """
-    Load and prepare a media clip (image or video) to fit duration and size.
-    For images, create a still clip. For videos, trim or loop if necessary.
-    Adds transition at the start unless it's the first clip.
-    """
     file_path = media_item["file_path"]
     media_type = media_item.get("type", "image")
 
@@ -72,24 +65,19 @@ def _prepare_clip(
         clip = ImageClip(file_path).set_duration(duration)
     else:
         clip = VideoFileClip(file_path)
-        # If video longer than needed, trim it; if shorter, loop it
         if clip.duration > duration:
             clip = clip.subclip(0, duration)
         elif clip.duration < duration:
-            # Loop the video to fill the required duration
             loops_needed = int(duration // clip.duration) + 1
             clip = concatenate_videoclips([clip] * loops_needed).subclip(0, duration)
 
-    # Resize and crop to target aspect ratio and resolution
     target_w, target_h = target_size
     clip_w, clip_h = clip.size
     scale = max(target_w / clip_w, target_h / clip_h)
     clip = clip.resize(scale)
-    # Now crop from center
     clip = clip.crop(x_center=clip.w / 2, y_center=clip.h / 2,
                      width=target_w, height=target_h)
 
-    # Apply transition (skip for first clip)
     if not is_first:
         clip = _apply_transition(clip, transition)
 
@@ -104,23 +92,11 @@ def assemble_video(
     aspect_ratio: str = "16:9",
     resolution: Tuple[int, int] = (1920, 1080),
 ) -> None:
-    """
-    Main video assembly function.
-
-    Args:
-        scenes: text of each scene (only for reference, not displayed currently)
-        media_list: list of media dicts for each scene, parallel to scenes
-        audio_path: path to the voiceover MP3, or None for silent video
-        output_path: destination MP4 file
-        aspect_ratio: "16:9", "9:16", or "1:1"
-        resolution: (width, height)
-    """
     logger.info(f"Assembling video: {len(scenes)} scenes, {resolution[0]}x{resolution[1]}, {aspect_ratio}")
 
     if not media_list or len(media_list) == 0:
         raise ValueError("No media to assemble.")
 
-    # Determine total duration and scene duration
     if audio_path is not None:
         audio = AudioFileClip(str(audio_path))
         total_duration = audio.duration
@@ -135,7 +111,6 @@ def assemble_video(
 
     clips = []
     for i, media in enumerate(media_list):
-        # Pick a random transition for the next scene (but not applied to first)
         if i == 0:
             transition = None
         else:
@@ -146,7 +121,6 @@ def assemble_video(
                              transition=transition, is_first=(i == 0))
         clips.append(clip)
 
-    # If total clips duration doesn't match total_duration exactly, adjust last clip
     clips_total_duration = sum(c.duration for c in clips)
     duration_diff = total_duration - clips_total_duration
     if duration_diff != 0:
@@ -155,14 +129,11 @@ def assemble_video(
         new_last = last_clip.set_duration(last_clip.duration + duration_diff)
         clips[-1] = new_last
 
-    # Concatenate all clips
     final_video = concatenate_videoclips(clips, method="compose")
 
-    # Set audio if present
     if audio is not None:
         final_video = final_video.set_audio(audio)
 
-    # Write output
     logger.info(f"Rendering video to {output_path}...")
     final_video.write_videofile(
         str(output_path),
@@ -171,11 +142,10 @@ def assemble_video(
         audio_codec="aac",
         threads=4,
         preset="medium",
-        ffmpeg_params=["-crf", "23"],  # decent quality
+        ffmpeg_params=["-crf", "23"],
     )
     logger.info("Video rendering complete.")
 
-    # Close clips to release resources
     for c in clips:
         c.close()
     if audio is not None:
