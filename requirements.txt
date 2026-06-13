@@ -1,0 +1,11 @@
+moviepy==1.0.3
+gTTS==2.5.1
+spacy==3.7.4
+sentence-transformers==2.7.0
+requests
+beautifulsoup4
+aiohttp
+Pillow
+imagehash
+pydub
+tqdm

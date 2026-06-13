@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YT Auto Video Gen | Script to Video, Free</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1>🎬 YT Auto Video Gen</h1>
+            <p class="subtitle">Turn your script into a high‑quality video using unlimited free stock media — fully automated & cloud‑rendered.</p>
+        </header>
+
+        <!-- Main form -->
+        <main class="main-form">
+            <div class="card">
+                <!-- Script Input -->
+                <div class="form-group">
+                    <label for="script">📄 Your Video Script</label>
+                    <textarea id="script" rows="12" placeholder="Paste your full script here...&#10;&#10;Tip: Separate scenes with blank lines or use 'Scene 1:' markers."></textarea>
+                </div>
+
+                <!-- Options grid -->
+                <div class="options-grid">
+                    <!-- Aspect Ratio -->
+                    <div class="form-group">
+                        <label for="aspect">📐 Aspect Ratio</label>
+                        <select id="aspect">
+                            <option value="16:9" selected>16:9 (Landscape)</option>
+                            <option value="9:16">9:16 (Vertical)</option>
+                            <option value="1:1">1:1 (Square)</option>
+                        </select>
+                    </div>
+
+                    <!-- Quality -->
+                    <div class="form-group">
+                        <label for="quality">✨ Quality</label>
+                        <select id="quality">
+                            <option value="1080p" selected>1080p (Full HD)</option>
+                            <option value="720p">720p (HD)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Voiceover Options -->
+                <div class="form-group">
+                    <label>🎙️ Voiceover</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="voiceover" value="tts" checked>
+                            <span>Text‑to‑Speech (AI)</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="voiceover" value="custom_audio">
+                            <span>Upload My Audio</span>
+                        </label>
+                        <!-- ✅ New option -->
+                        <label class="radio-label">
+                            <input type="radio" name="voiceover" value="no_audio">
+                            <span>🔇 No Audio (Silent Video)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Custom Audio URL (hidden by default) -->
+                <div id="custom-audio-section" class="form-group hidden">
+                    <label for="audioUrl">🔗 Audio File URL (MP3, WAV)</label>
+                    <input type="text" id="audioUrl" placeholder="https://example.com/my-audio.mp3">
+                    <small>Upload your audio to any free host (e.g., GitHub, Dropbox, file.io) and paste the direct link.</small>
+                </div>
+
+                <!-- Action Button -->
+                <button id="generateBtn" class="btn-primary">
+                    <span id="btnText">⚡ Generate Video</span>
+                    <span id="btnSpinner" class="spinner hidden"></span>
+                </button>
+
+                <!-- Status Area -->
+                <div id="statusArea" class="status-area hidden">
+                    <div class="status-card">
+                        <div class="status-icon" id="statusIcon">⏳</div>
+                        <div class="status-text">
+                            <p id="statusMessage">Workflow triggered...</p>
+                            <a id="statusLink" href="#" target="_blank" class="hidden">View live progress ↗</a>
+                        </div>
+                    </div>
+                    <div id="downloadSection" class="download-section hidden">
+                        <a id="downloadLink" class="btn-download" download>⬇️ Download Video</a>
+                        <p class="note">Link expires in 7 days. Save your video!</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>Powered by free stock APIs, Google TTS, MoviePy & GitHub Actions. 100% free. No credit card needed.</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
