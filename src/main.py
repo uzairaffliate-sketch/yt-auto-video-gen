@@ -6,7 +6,7 @@ Cloud-native, free, smart-matching video creation from script.
 
 import os
 import sys
-import json
+import asyncio          # ✅ Added for async call
 import logging
 from pathlib import Path
 
@@ -76,10 +76,10 @@ def main():
     for i, kw in enumerate(scene_keywords):
         logger.info(f"  Scene {i+1}: {', '.join(kw[:5])}")
 
-    # 5. Fetch media from multiple free sources
+    # 5. Fetch media from multiple free sources (async call)
     logger.info("🌐 Fetching stock media from all free sources...")
     try:
-        media_results = fetch_media_for_scenes(scene_keywords, temp_dir=TEMP_DIR)
+        media_results = asyncio.run(fetch_media_for_scenes(scene_keywords, temp_dir=TEMP_DIR))
     except Exception as e:
         logger.exception("Media fetching failed!")
         sys.exit(1)
