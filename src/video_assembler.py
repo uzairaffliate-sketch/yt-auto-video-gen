@@ -1,3 +1,4 @@
+
 """
 Video Assembler – uses MoviePy 2.x to combine media clips, apply visible
 fade-to-black transitions, and Ken Burns effect on still images
