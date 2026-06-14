@@ -49,33 +49,29 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Disable pip cache to avoid corruption
-      - name: Install Python packages (fresh)
+      - name: Debug environment
         run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir wheel setuptools
-          pip install --no-cache-dir -r requirements.txt
-
-      # Explicitly reinstall moviepy with its core dependencies (in case of conflict)
-      - name: Reinstall moviepy with dependencies
-        run: |
-          pip uninstall -y moviepy imageio imageio-ffmpeg decorator numpy
-          pip install --no-cache-dir moviepy==2.1.1
-
-      - name: Debug installed packages and Python path
-        run: |
-          pip list
-          python -c "import sys; print('sys.path:', sys.path)"
-          python -c "import pkgutil; print('Installed packages:', [mod.name for mod in pkgutil.iter_modules() if 'moviepy' in mod.name or 'imageio' in mod.name])"
-
-      - name: Test moviepy import
-        run: |
-          python -c "from moviepy.editor import VideoFileClip; print('moviepy import successful')"
+          which python
+          python --version
+          which pip
+          pip --version
 
       - name: Install system dependencies (FFmpeg)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+
+      - name: Force clean install of all Python packages
+        run: |
+          python -m pip uninstall -y moviepy imageio imageio-ffmpeg decorator numpy pillow aiohttp requests beautifulsoup4 gTTS spacy sentence-transformers pydub tqdm || true
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install --no-cache-dir --verbose -r requirements.txt
+
+      - name: Verify moviepy import
+        run: |
+          python -m pip show moviepy
+          python -c "import sys; print('sys.path:', sys.path)"
+          python -c "from moviepy.editor import VideoFileClip; print('moviepy import successful')"
 
       - name: Cache spaCy model
         uses: actions/cache@v4
