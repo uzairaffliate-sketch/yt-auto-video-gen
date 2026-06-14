@@ -2,6 +2,7 @@
 """
 YT Auto Video Generator - Main Orchestrator
 Cloud-native, free, smart-matching video creation from script.
+Now with visual theme injection and image Ken Burns effects.
 """
 
 import os
@@ -12,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scene_processor import split_script, extract_keywords
+from scene_processor import split_script, extract_keywords_and_visual_queries
 from media_fetcher import fetch_media_for_scenes
 from media_selector import select_best_media
 from voiceover_generator import generate_audio
@@ -62,14 +63,24 @@ def main():
         logger.error("No scenes could be extracted. Check script formatting.")
         sys.exit(1)
 
-    logger.info("🔍 Extracting keywords...")
-    scene_keywords = [extract_keywords(scene) for scene in scenes_text]
-    for i, kw in enumerate(scene_keywords):
-        logger.info(f"  Scene {i+1}: {', '.join(kw[:5])}")
+    # 4. Extract keywords AND visual search queries for each scene
+    logger.info("🔍 Extracting keywords & visual queries...")
+    scene_keywords = []
+    scene_visual_queries = []
+    for i, scene in enumerate(scenes_text):
+        kw, visq = extract_keywords_and_visual_queries(scene)
+        scene_keywords.append(kw)
+        scene_visual_queries.append(visq)
+        logger.info(f"  Scene {i+1}: {', '.join(kw[:5])} | Visuals: {', '.join(visq[:3])}")
 
-    logger.info("🌐 Fetching stock media from all free sources...")
+    # 5. Fetch media with combined queries (original keywords + thematic visuals)
+    logger.info("🌐 Fetching stock media with thematic queries...")
     try:
-        media_results = asyncio.run(fetch_media_for_scenes(scene_keywords, temp_dir=TEMP_DIR))
+        media_results = asyncio.run(fetch_media_for_scenes(
+            scene_keywords,
+            temp_dir=TEMP_DIR,
+            visual_queries_list=scene_visual_queries
+        ))
     except Exception as e:
         logger.exception("Media fetching failed!")
         sys.exit(1)
@@ -127,7 +138,7 @@ def main():
             logger.exception("Audio generation failed!")
             sys.exit(1)
 
-    logger.info("🎬 Assembling video with random transitions...")
+    logger.info("🎬 Assembling video with Ken Burns effects and transitions...")
     width, height = RESOLUTIONS.get(QUALITY, (1920, 1080))
     try:
         assemble_video(
