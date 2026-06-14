@@ -49,20 +49,17 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Force cache to be invalidated if requirements.txt changed
-      - name: Cache Python dependencies (with timestamp)
+      - name: Cache Python dependencies
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: Cache spaCy model
         uses: actions/cache@v4
         with:
           path: ~/spacy_data
-          key: spacy-en-core-web-sm-3.7
+          key: spacy-en-core-web-sm-3.7.1
 
       - name: Cache sentence-transformers model
         uses: actions/cache@v4
@@ -78,18 +75,27 @@ jobs:
       - name: Install Python packages
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          pip install -r requirements.txt
 
       - name: Verify critical packages
         run: |
           python -c "import moviepy; print('moviepy version:', moviepy.__version__)"
           python -c "import PIL; print('Pillow version:', PIL.__version__)"
           python -c "import aiohttp; print('aiohttp version:', aiohttp.__version__)"
-          pip list | grep -E "moviepy|Pillow|aiohttp"
 
-      - name: Download spaCy model
+      - name: Download spaCy model (with retry)
         run: |
-          python -m spacy download en_core_web_sm
+          MODEL="en_core_web_sm-3.7.1"
+          for i in 1 2 3; do
+            echo "Attempt $i: Downloading $MODEL..."
+            python -m spacy download en_core_web_sm --direct && break
+            # Fallback: pip install from GitHub release
+            pip install https://github.com/explosion/spacy-models/releases/download/${MODEL}/${MODEL}-py3-none-any.whl && break
+            echo "Attempt $i failed, waiting 10 seconds..."
+            sleep 10
+          done
+          # Verify installation
+          python -c "import spacy; spacy.load('en_core_web_sm'); print('spaCy model loaded successfully')"
 
       - name: Run video generator
         env:
