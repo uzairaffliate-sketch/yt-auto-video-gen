@@ -6,11 +6,10 @@ Cloud-native, free, smart-matching video creation from script.
 
 import os
 import sys
-import asyncio          # ✅ Added for async call
+import asyncio
 import logging
 from pathlib import Path
 
-# Add src directory to path for clean imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scene_processor import split_script, extract_keywords
@@ -20,26 +19,22 @@ from voiceover_generator import generate_audio
 from video_assembler import assemble_video
 from utils import setup_logging, cleanup_temp_files, ensure_output_dir
 
-# Environment variables injected by GitHub Actions
 SCRIPT = os.getenv("SCRIPT", "")
 ASPECT = os.getenv("ASPECT", "16:9")
 QUALITY = os.getenv("QUALITY", "1080p")
 VOICEOVER_TYPE = os.getenv("VOICEOVER_TYPE", "tts")
 AUDIO_URL = os.getenv("AUDIO_URL", "")
 
-# Output directory
 OUTPUT_DIR = Path("output")
 OUTPUT_VIDEO = OUTPUT_DIR / "output.mp4"
 TEMP_DIR = Path("temp_media")
 
-# Resolution mapping
 RESOLUTIONS = {
     "1080p": (1920, 1080),
     "720p": (1280, 720),
 }
 
 def main():
-    """Main pipeline orchestration."""
     setup_logging()
     logger = logging.getLogger(__name__)
 
@@ -48,7 +43,6 @@ def main():
     logger.info(f"Aspect: {ASPECT} | Quality: {QUALITY} | Voiceover: {VOICEOVER_TYPE}")
     logger.info("=" * 60)
 
-    # 1. Validate input
     if not SCRIPT.strip():
         logger.error("Script is empty. Exiting.")
         sys.exit(1)
@@ -57,11 +51,9 @@ def main():
         logger.error("Custom audio mode selected but no AUDIO_URL provided.")
         sys.exit(1)
 
-    # 2. Ensure output directory exists
     ensure_output_dir(OUTPUT_DIR)
     ensure_output_dir(TEMP_DIR)
 
-    # 3. Break script into scenes
     logger.info("📄 Processing script...")
     scenes_text = split_script(SCRIPT)
     logger.info(f"✓ Found {len(scenes_text)} scenes.")
@@ -70,13 +62,11 @@ def main():
         logger.error("No scenes could be extracted. Check script formatting.")
         sys.exit(1)
 
-    # 4. Extract keywords for each scene
     logger.info("🔍 Extracting keywords...")
     scene_keywords = [extract_keywords(scene) for scene in scenes_text]
     for i, kw in enumerate(scene_keywords):
         logger.info(f"  Scene {i+1}: {', '.join(kw[:5])}")
 
-    # 5. Fetch media from multiple free sources (async call)
     logger.info("🌐 Fetching stock media from all free sources...")
     try:
         media_results = asyncio.run(fetch_media_for_scenes(scene_keywords, temp_dir=TEMP_DIR))
@@ -84,19 +74,27 @@ def main():
         logger.exception("Media fetching failed!")
         sys.exit(1)
 
-    # 6. Smart selection (best match via sentence-transformers)
+    # 6. Smart selection with duplicate avoidance
     logger.info("🧠 Selecting best media for each scene...")
     selected_media = []
+    used_urls = set()
     for i, (keywords, media_list) in enumerate(zip(scene_keywords, media_results)):
         if not media_list:
             logger.warning(f"⚠️  Scene {i+1}: No media found. Skipping scene.")
             selected_media.append(None)
             continue
-        best = select_best_media(keywords, media_list)
+
+        # Remove already used URLs to avoid repetition
+        unused_media = [m for m in media_list if m.get("url") not in used_urls]
+        if not unused_media:
+            unused_media = media_list  # if all are used, allow reuse
+
+        best = select_best_media(keywords, unused_media)
+        if best:
+            used_urls.add(best["url"])
         selected_media.append(best)
         logger.info(f"  Scene {i+1}: Selected → {best.get('source', 'unknown')} | {best.get('file_path', 'N/A')}")
 
-    # Remove scenes with no media
     valid_scenes = []
     valid_media = []
     for scene_text, media in zip(scenes_text, selected_media):
@@ -110,7 +108,6 @@ def main():
         logger.error("All scenes lacked media. Cannot generate video.")
         sys.exit(1)
 
-    # 7. Generate or load voiceover (skip if no_audio)
     logger.info("🎙️  Preparing audio...")
     if VOICEOVER_TYPE == "no_audio":
         audio_path = None
@@ -130,7 +127,6 @@ def main():
             logger.exception("Audio generation failed!")
             sys.exit(1)
 
-    # 8. Assemble video with transitions
     logger.info("🎬 Assembling video with random transitions...")
     width, height = RESOLUTIONS.get(QUALITY, (1920, 1080))
     try:
