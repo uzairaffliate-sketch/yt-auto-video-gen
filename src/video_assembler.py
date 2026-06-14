@@ -1,4 +1,3 @@
-
 """
 Video Assembler – uses MoviePy 2.x to combine media clips, apply visible
 fade-to-black transitions, and Ken Burns effect on still images
@@ -9,6 +8,8 @@ import logging
 import random
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
+
+import numpy as np
 
 # Patch Pillow ANTIALIAS for newer versions (some deps still reference it)
 import PIL.Image
@@ -40,70 +41,78 @@ def _apply_out_transition(clip, duration=TRANSITION_DURATION):
     return clip.with_effects([CrossFadeOut(duration)])
 
 
+def _crop_frame(frame, x_center, y_center, w, h):
+    """Crop a (H, W, 3) numpy frame around the given center, clamped to bounds."""
+    fh, fw = frame.shape[:2]
+    w = min(int(w), fw)
+    h = min(int(h), fh)
+    x1 = int(round(x_center - w / 2))
+    y1 = int(round(y_center - h / 2))
+    # Clamp so we never read outside the frame
+    x1 = max(0, min(x1, fw - w))
+    y1 = max(0, min(y1, fh - h))
+    return frame[y1:y1 + h, x1:x1 + w]
+
+
 def _ken_burns_effect(clip, duration, target_size):
     """
     Apply zoom in/out or pan left/right to an image clip (MoviePy 2.x).
 
-    Uses time-varying Resize / Crop effects. The Resize effect accepts a
-    callable taking time `t` and returning a scale factor, and Crop accepts
-    callables for x_center / y_center for smooth panning.
+    MoviePy 2.x Crop/Resize effects do NOT accept time-varying callables,
+    so the motion is implemented manually with clip.transform(), which
+    yields a fresh, correctly-sized frame for every timestamp t.
     """
     target_w, target_h = target_size
     clip = clip.with_duration(duration)
     effect_type = random.choice(["zoom_in", "zoom_out", "pan_left", "pan_right"])
 
-    if effect_type == "zoom_in":
-        def zoom_func(t):
-            return 1.0 + 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.with_effects([Resize(zoom_func)])
-        clip_zoomed = clip_zoomed.with_effects([
-            Crop(x_center=clip_zoomed.w / 2, y_center=clip_zoomed.h / 2,
-                 width=target_w, height=target_h)
+    if effect_type in ("zoom_in", "zoom_out"):
+        # Upscale so the most-zoomed-in frame still fully covers the target.
+        max_zoom = 1.3
+        base = clip.with_effects([
+            Resize(new_size=(int(target_w * max_zoom), int(target_h * max_zoom)))
         ])
-        return clip_zoomed.with_duration(duration)
+        bw, bh = base.size
 
-    elif effect_type == "zoom_out":
-        def zoom_func(t):
-            return 1.3 - 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.with_effects([Resize(zoom_func)])
-        clip_zoomed = clip_zoomed.with_effects([
-            Crop(x_center=clip_zoomed.w / 2, y_center=clip_zoomed.h / 2,
-                 width=target_w, height=target_h)
-        ])
-        return clip_zoomed.with_duration(duration)
+        def make_frame_zoom(get_frame, t):
+            frame = get_frame(t)
+            progress = (t / duration) if duration > 0 else 0.0
+            if effect_type == "zoom_in":
+                scale = 1.0 + 0.3 * progress      # 1.0 -> 1.3
+            else:
+                scale = 1.3 - 0.3 * progress      # 1.3 -> 1.0
+            crop_w = min(int(target_w * max_zoom / scale), bw)
+            crop_h = min(int(target_h * max_zoom / scale), bh)
+            cropped = _crop_frame(frame, bw / 2, bh / 2, crop_w, crop_h)
+            return cropped
 
-    elif effect_type == "pan_left":
-        big_clip = clip.with_effects([Resize(1.2)])
-        big_w, big_h = big_clip.size
-        start_x = big_w - target_w   # start at right edge
-        end_x = 0                    # end at left edge
+        moving = base.transform(make_frame_zoom, apply_to=[])
+        # Normalize every frame back to the exact target size.
+        return moving.with_effects([
+            Resize(new_size=(target_w, target_h))
+        ]).with_duration(duration)
 
-        def x_center_func(t):
-            return start_x - (start_x - end_x) * (t / duration) if duration > 0 else start_x
+    else:
+        # Pan: upscale slightly, then slide the crop window horizontally.
+        base = clip.with_effects([Resize(1.25)])
+        bw, bh = base.size
+        max_x = max(0, bw - target_w)
 
-        cropped = big_clip.with_effects([
-            Crop(x_center=x_center_func, y_center=big_h / 2,
-                 width=target_w, height=target_h)
-        ])
-        return cropped.with_duration(duration)
+        def make_frame_pan(get_frame, t):
+            frame = get_frame(t)
+            progress = (t / duration) if duration > 0 else 0.0
+            if effect_type == "pan_left":
+                # start at right edge, move to left
+                x_center = (max_x - max_x * progress) + target_w / 2
+            else:  # pan_right
+                x_center = (max_x * progress) + target_w / 2
+            return _crop_frame(frame, x_center, bh / 2, target_w, target_h)
 
-    elif effect_type == "pan_right":
-        big_clip = clip.with_effects([Resize(1.2)])
-        big_w, big_h = big_clip.size
-        start_x = 0
-        end_x = big_w - target_w
-
-        def x_center_func(t):
-            return start_x + (end_x - start_x) * (t / duration) if duration > 0 else start_x
-
-        cropped = big_clip.with_effects([
-            Crop(x_center=x_center_func, y_center=big_h / 2,
-                 width=target_w, height=target_h)
-        ])
-        return cropped.with_duration(duration)
-
-    # Fallback (should never be reached)
-    return clip.with_effects([Resize(new_size=(target_w, target_h))]).with_duration(duration)
+        moving = base.transform(make_frame_pan, apply_to=[])
+        # Guarantee exact output size even if rounding shaved a pixel.
+        return moving.with_effects([
+            Resize(new_size=(target_w, target_h))
+        ]).with_duration(duration)
 
 
 def _prepare_clip(
