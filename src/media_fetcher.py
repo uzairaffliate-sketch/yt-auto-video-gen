@@ -1,9 +1,10 @@
 """
 Multi‑source stock media aggregator – fetches images & videos from all available free sources.
 Includes free image sources that need NO API key.
+Now supports visual_queries_list for thematic search.
 """
 
-import asyncio, hashlib, logging, os, re, time, json
+import asyncio, hashlib, logging, os, re, json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import quote_plus
@@ -18,15 +19,15 @@ logger = logging.getLogger(__name__)
 
 MAX_MEDIA_PER_SOURCE = 5
 MAX_CONCURRENT_REQUESTS = 10
-USER_AGENT = "YT-Auto-Video-Gen/1.0 (Educational)"
+USER_AGENT = "YT-Auto-Video-Gen/1.0 (Educational Project)"
 
-# API keys (only needed for premium sources, empty = skip)
+# API keys from environment (set as GitHub Secrets)
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "")
 BURST_API_KEY = os.getenv("BURST_API_KEY", "")
 
-# ---------- Async helpers (unchanged) ----------
+# ---------- Async HTTP helpers ----------
 async def _fetch_json(session, url, headers=None, params=None):
     try:
         async with session.get(url, headers=headers, params=params, timeout=30) as resp:
@@ -45,35 +46,31 @@ async def _fetch_html(session, url, headers=None):
         logger.debug(f"HTML fail {url}: {e}")
         return None
 
-# ---------- Original sources (Pexels, Pixabay, Unsplash, Burst, Mixkit, Coverr, Videvo) unchanged ----------
-# (Include the versions that already return title tuples for video resolvers)
-# ... paste the unchanged code for those functions here ...
+# ---------- Original API Sources ----------
+# ... (all existing functions unchanged: _search_pexels, _search_pixabay, etc.) ...
+# For brevity I am not repeating them here; they are exactly the same as in your pasted file.
+# The following block is unchanged up to the NEW IMAGE SOURCES section.
 
-# I will include them in the final, but to save space, I'll mention they remain exactly as the previous fixed version (with title extraction). 
-# For brevity, I'll write the new additions and note the rest unchanged.
+# ... include all the functions you already have up to _search_stocksnap ...
 
 # ---------- NEW FREE IMAGE SOURCES (no API key needed) ----------
 
-# Wikimedia Commons – free, no key
-async def _search_wikimedia(session: ClientSession, query: str) -> List[Dict]:
-    """Search Wikimedia Commons for free images via public API."""
+async def _search_wikimedia(session, query):
     url = "https://commons.wikimedia.org/w/api.php"
     params = {
         "action": "query",
         "list": "search",
         "srsearch": query,
-        "srnamespace": "6",  # File namespace
+        "srnamespace": "6",
         "format": "json",
         "srlimit": MAX_MEDIA_PER_SOURCE,
     }
     data = await _fetch_json(session, url, params=params)
     if not data or "query" not in data:
         return []
-
     results = []
     for item in data["query"]["search"]:
         title = item["title"]
-        # Get image info
         img_url = await _get_wikimedia_image_url(session, title)
         if img_url:
             results.append({
@@ -81,7 +78,7 @@ async def _search_wikimedia(session: ClientSession, query: str) -> List[Dict]:
                 "title": title.replace("File:", "").replace("_", " "),
                 "source": "Wikimedia Commons",
                 "type": "image",
-                "thumbnail_url": img_url,  # same for now
+                "thumbnail_url": img_url,
             })
     return results
 
@@ -103,25 +100,19 @@ async def _get_wikimedia_image_url(session, filename):
             return page["imageinfo"][0]["url"]
     return None
 
-
-# StockSnap.io – free, no key, scrape search page
-async def _search_stocksnap(session: ClientSession, query: str) -> List[Dict]:
-    """Scrape StockSnap.io for free stock photos."""
+async def _search_stocksnap(session, query):
     url = f"https://stocksnap.io/search/{quote_plus(query)}"
     html = await _fetch_html(session, url, headers={"User-Agent": USER_AGENT})
     if not html:
         return []
-
     soup = BeautifulSoup(html, "html.parser")
     results = []
     for img_tag in soup.select("img.photo-img")[:MAX_MEDIA_PER_SOURCE]:
         src = img_tag.get("src") or img_tag.get("data-src")
         if not src:
             continue
-        # Make absolute URL
         if src.startswith("/"):
             src = "https://stocksnap.io" + src
-        # Extract title from alt or parent
         title = img_tag.get("alt", "")
         if not title:
             parent = img_tag.find_parent("a")
@@ -136,12 +127,42 @@ async def _search_stocksnap(session: ClientSession, query: str) -> List[Dict]:
         })
     return results
 
+# ---------- NEW: Google Images Scraping (free, no API key) ----------
+async def _search_google_images(session, query):
+    """
+    Scrape Google Images search results for direct image URLs.
+    Extracts 'ou' (original URL) from inline JavaScript data.
+    Note: This may break if Google changes its page structure.
+    """
+    url = f"https://www.google.com/search?q={quote_plus(query)}&tbm=isch&sclient=img"
+    html = await _fetch_html(session, url, headers={"User-Agent": USER_AGENT})
+    if not html:
+        return []
 
-# ---------- Aggregator (updated to include new image sources) ----------
+    # Regular expression to find "ou":"http://..." (original image URL)
+    pattern = r'"ou":"(.*?)"'
+    matches = re.findall(pattern, html)
+    results = []
+    for img_url in matches:
+        # Clean up escape sequences like \u003d -> =
+        img_url = img_url.replace("\\u003d", "=").replace("\\u0026", "&")
+        if not img_url.startswith("http"):
+            continue
+        results.append({
+            "url": img_url,
+            "title": "",
+            "source": "Google Images",
+            "type": "image",
+            "thumbnail_url": img_url,
+        })
+        if len(results) >= MAX_MEDIA_PER_SOURCE:
+            break
+    return results
+
+# ---------- Aggregator (updated for visual_queries and new sources) ----------
 
 async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
                                      visual_queries=None, max_total=5):
-    # Combine keywords and visual queries into one search string for better results
     primary_query = " ".join(keywords[:5])
     if visual_queries:
         extra = " ".join(visual_queries[:3])
@@ -154,7 +175,6 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
     scene_folder = temp_dir / f"scene_{scene_idx}"
     ensure_output_dir(scene_folder)
 
-    # Search all sources (API-based and scraped)
     tasks = [
         _search_pexels(session, query),
         _search_pixabay(session, query),
@@ -163,15 +183,16 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
         _search_mixkit(session, query),
         _search_coverr(session, query),
         _search_videvo(session, query),
-        _search_wikimedia(session, query),      # NEW
-        _search_stocksnap(session, query),      # NEW
+        _search_wikimedia(session, query),
+        _search_stocksnap(session, query),
+        _search_google_images(session, query),      # ✅ Google Images added
     ]
     results_nested = await asyncio.gather(*tasks)
     all_items = []
     for res in results_nested:
         all_items.extend(res)
 
-    # Resolve scraped video pages (same as before, but with title extraction)
+    # Resolve video URLs that need page scraping (now with title extraction)
     for item in all_items:
         if item.get("_needs_page"):
             item.pop("_needs_page", None)
