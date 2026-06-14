@@ -1,6 +1,6 @@
 """
 Video Assembler – uses MoviePy to combine media clips, apply visible fade-to-black transitions,
-and Ken Burns effect on still images. Supports silent video (no audio).
+and Ken Burns effect on still images (zoom in/out, pan left/right). Supports silent video.
 """
 
 import logging
@@ -38,37 +38,33 @@ def _apply_out_transition(clip, duration=TRANSITION_DURATION):
 
 def _ken_burns_effect(clip, duration, target_size):
     """
-    Apply a slow zoom in/out or pan to an image clip to make it dynamic.
-    Returns a new clip with the effect.
+    Apply zoom in/out or pan left/right to an image clip.
+    Works with MoviePy >=2.0 (supports callable in crop).
     """
     target_w, target_h = target_size
-    # Randomly choose an effect
     effect_type = random.choice(["zoom_in", "zoom_out", "pan_left", "pan_right"])
 
     if effect_type == "zoom_in":
-        # Scale from 1.0 to 1.3 over duration
-        def zoom_in_func(t):
+        def zoom_func(t):
             return 1.0 + 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.resize(zoom_in_func)
+        clip_zoomed = clip.resize(zoom_func)
         clip_zoomed = clip_zoomed.crop(x_center=clip_zoomed.w/2, y_center=clip_zoomed.h/2,
                                        width=target_w, height=target_h)
         return clip_zoomed.set_duration(duration)
 
     elif effect_type == "zoom_out":
-        # Scale from 1.3 to 1.0
-        def zoom_out_func(t):
+        def zoom_func(t):
             return 1.3 - 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.resize(zoom_out_func)
+        clip_zoomed = clip.resize(zoom_func)
         clip_zoomed = clip_zoomed.crop(x_center=clip_zoomed.w/2, y_center=clip_zoomed.h/2,
                                        width=target_w, height=target_h)
         return clip_zoomed.set_duration(duration)
 
     elif effect_type == "pan_left":
-        # Create a larger clip then pan its crop window
         big_clip = clip.resize(1.2)
         big_w, big_h = big_clip.size
-        start_x = big_w - target_w          # right edge
-        end_x = 0                            # left edge
+        start_x = big_w - target_w   # start at right edge
+        end_x = 0                     # end at left edge
         def x_center_func(t):
             return start_x - (start_x - end_x) * (t / duration) if duration > 0 else start_x
         cropped = big_clip.crop(x_center=x_center_func, y_center=big_h/2,
@@ -86,9 +82,8 @@ def _ken_burns_effect(clip, duration, target_size):
                                 width=target_w, height=target_h)
         return cropped.set_duration(duration)
 
-    # Fallback: static fit to target
-    clip_fit = clip.resize(newsize=(target_w, target_h))
-    return clip_fit.set_duration(duration)
+    # Fallback (should never be reached)
+    return clip.resize(newsize=(target_w, target_h)).set_duration(duration)
 
 
 def _prepare_clip(
