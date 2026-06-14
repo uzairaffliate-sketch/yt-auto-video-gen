@@ -9,7 +9,7 @@ import random
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-# ✅ Patch Pillow ANTIALIAS for newer versions (removed in Pillow 10+)
+# Patch Pillow ANTIALIAS for newer versions
 import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
@@ -27,7 +27,8 @@ from moviepy.video.fx.resize import resize
 logger = logging.getLogger(__name__)
 
 # Available transition effects (randomly chosen between scenes)
-TRANSITIONS = ["fade", "slide_left", "slide_right", "zoom_in", "crossfade"]
+# Note: MoviePy 1.0.3 only supports crossfadein safely.
+TRANSITIONS = ["fade"]  # we'll map all to crossfadein for now
 
 # Default transition duration in seconds
 TRANSITION_DURATION = 0.5
@@ -37,18 +38,12 @@ DEFAULT_SCENE_DURATION = 5.0  # seconds
 
 
 def _apply_transition(clip, transition_name: str, duration: float = TRANSITION_DURATION):
-    if transition_name == "fade":
-        return clip.crossfadein(duration)
-    elif transition_name == "slide_left":
-        return clip.fx(vfx.slide_in, duration, "left")
-    elif transition_name == "slide_right":
-        return clip.fx(vfx.slide_in, duration, "right")
-    elif transition_name == "zoom_in":
-        return clip.fx(vfx.resize, lambda t: 1 + 0.1 * t)
-    elif transition_name == "crossfade":
-        return clip.crossfadein(duration)
-    else:
-        return clip
+    """
+    Apply a transition effect to the start of a clip.
+    Currently all transitions use crossfadein (fade from black).
+    """
+    # All transitions resolve to crossfadein for compatibility
+    return clip.crossfadein(duration)
 
 
 def _prepare_clip(
@@ -111,10 +106,11 @@ def assemble_video(
 
     clips = []
     for i, media in enumerate(media_list):
+        # Always use 'fade' transition
         if i == 0:
             transition = None
         else:
-            transition = random.choice(TRANSITIONS)
+            transition = 'fade'  # random.choice(TRANSITIONS) if multiple available
 
         logger.debug(f"Scene {i+1}: media={media.get('file_path')}, duration={scene_duration:.2f}s, transition={transition}")
         clip = _prepare_clip(media, scene_duration, resolution,
