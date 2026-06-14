@@ -49,11 +49,33 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      # Disable pip cache to avoid corruption
+      - name: Install Python packages (fresh)
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir wheel setuptools
+          pip install --no-cache-dir -r requirements.txt
+
+      # Explicitly reinstall moviepy with its core dependencies (in case of conflict)
+      - name: Reinstall moviepy with dependencies
+        run: |
+          pip uninstall -y moviepy imageio imageio-ffmpeg decorator numpy
+          pip install --no-cache-dir moviepy==2.1.1
+
+      - name: Debug installed packages and Python path
+        run: |
+          pip list
+          python -c "import sys; print('sys.path:', sys.path)"
+          python -c "import pkgutil; print('Installed packages:', [mod.name for mod in pkgutil.iter_modules() if 'moviepy' in mod.name or 'imageio' in mod.name])"
+
+      - name: Test moviepy import
+        run: |
+          python -c "from moviepy.editor import VideoFileClip; print('moviepy import successful')"
+
+      - name: Install system dependencies (FFmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Cache spaCy model
         uses: actions/cache@v4
@@ -61,41 +83,17 @@ jobs:
           path: ~/spacy_data
           key: spacy-en-core-web-sm-3.7.1
 
-      - name: Cache sentence-transformers model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/torch/sentence_transformers
-          key: st-all-MiniLM-L6-v2
-
-      - name: Install system dependencies (FFmpeg)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python packages
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Verify critical packages
-        run: |
-          python -c "import moviepy; print('moviepy version:', moviepy.__version__)"
-          python -c "import PIL; print('Pillow version:', PIL.__version__)"
-          python -c "import aiohttp; print('aiohttp version:', aiohttp.__version__)"
-
       - name: Download spaCy model (with retry)
         run: |
           MODEL="en_core_web_sm-3.7.1"
           for i in 1 2 3; do
             echo "Attempt $i: Downloading $MODEL..."
             python -m spacy download en_core_web_sm --direct && break
-            # Fallback: pip install from GitHub release
             pip install https://github.com/explosion/spacy-models/releases/download/${MODEL}/${MODEL}-py3-none-any.whl && break
             echo "Attempt $i failed, waiting 10 seconds..."
             sleep 10
           done
-          # Verify installation
-          python -c "import spacy; spacy.load('en_core_web_sm'); print('spaCy model loaded successfully')"
+          python -c "import spacy; spacy.load('en_core_web_sm'); print('spaCy model loaded')"
 
       - name: Run video generator
         env:
