@@ -71,7 +71,7 @@ jobs:
         run: |
           python -m pip show moviepy
           python -c "import sys; print('sys.path:', sys.path)"
-          python -c "from moviepy.editor import VideoFileClip; print('moviepy import successful')"
+          python -c "from moviepy import VideoFileClip; print('moviepy import successful')"
 
       - name: Cache spaCy model
         uses: actions/cache@v4
