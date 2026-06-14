@@ -1,6 +1,7 @@
 """
-Video Assembler – uses MoviePy to combine media clips, apply visible fade-to-black transitions,
-and Ken Burns effect on still images (zoom in/out, pan left/right). Supports silent video.
+Video Assembler – uses MoviePy 2.x to combine media clips, apply visible
+fade-to-black transitions, and Ken Burns effect on still images
+(zoom in/out, pan left/right). Supports silent video.
 """
 
 import logging
@@ -8,17 +9,19 @@ import random
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-# Patch Pillow ANTIALIAS for newer versions
+# Patch Pillow ANTIALIAS for newer versions (some deps still reference it)
 import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
 
-from moviepy.editor import (
+# MoviePy 2.x: import directly from `moviepy` (no `.editor`)
+from moviepy import (
     VideoFileClip,
     ImageClip,
     AudioFileClip,
     concatenate_videoclips,
 )
+from moviepy.video.fx import CrossFadeIn, CrossFadeOut, Resize, Crop
 
 logger = logging.getLogger(__name__)
 
@@ -28,62 +31,78 @@ DEFAULT_SCENE_DURATION = 5.0        # seconds per scene when no audio
 
 def _apply_in_transition(clip, duration=TRANSITION_DURATION):
     """Fade in from black at the beginning of a clip."""
-    return clip.crossfadein(duration)
+    return clip.with_effects([CrossFadeIn(duration)])
 
 
 def _apply_out_transition(clip, duration=TRANSITION_DURATION):
     """Fade out to black at the end of a clip."""
-    return clip.crossfadeout(duration)
+    return clip.with_effects([CrossFadeOut(duration)])
 
 
 def _ken_burns_effect(clip, duration, target_size):
     """
-    Apply zoom in/out or pan left/right to an image clip.
-    Works with MoviePy >=2.0 (supports callable in crop).
+    Apply zoom in/out or pan left/right to an image clip (MoviePy 2.x).
+
+    Uses time-varying Resize / Crop effects. The Resize effect accepts a
+    callable taking time `t` and returning a scale factor, and Crop accepts
+    callables for x_center / y_center for smooth panning.
     """
     target_w, target_h = target_size
+    clip = clip.with_duration(duration)
     effect_type = random.choice(["zoom_in", "zoom_out", "pan_left", "pan_right"])
 
     if effect_type == "zoom_in":
         def zoom_func(t):
             return 1.0 + 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.resize(zoom_func)
-        clip_zoomed = clip_zoomed.crop(x_center=clip_zoomed.w/2, y_center=clip_zoomed.h/2,
-                                       width=target_w, height=target_h)
-        return clip_zoomed.set_duration(duration)
+        clip_zoomed = clip.with_effects([Resize(zoom_func)])
+        clip_zoomed = clip_zoomed.with_effects([
+            Crop(x_center=clip_zoomed.w / 2, y_center=clip_zoomed.h / 2,
+                 width=target_w, height=target_h)
+        ])
+        return clip_zoomed.with_duration(duration)
 
     elif effect_type == "zoom_out":
         def zoom_func(t):
             return 1.3 - 0.3 * (t / duration) if duration > 0 else 1.0
-        clip_zoomed = clip.resize(zoom_func)
-        clip_zoomed = clip_zoomed.crop(x_center=clip_zoomed.w/2, y_center=clip_zoomed.h/2,
-                                       width=target_w, height=target_h)
-        return clip_zoomed.set_duration(duration)
+        clip_zoomed = clip.with_effects([Resize(zoom_func)])
+        clip_zoomed = clip_zoomed.with_effects([
+            Crop(x_center=clip_zoomed.w / 2, y_center=clip_zoomed.h / 2,
+                 width=target_w, height=target_h)
+        ])
+        return clip_zoomed.with_duration(duration)
 
     elif effect_type == "pan_left":
-        big_clip = clip.resize(1.2)
+        big_clip = clip.with_effects([Resize(1.2)])
         big_w, big_h = big_clip.size
         start_x = big_w - target_w   # start at right edge
-        end_x = 0                     # end at left edge
+        end_x = 0                    # end at left edge
+
         def x_center_func(t):
             return start_x - (start_x - end_x) * (t / duration) if duration > 0 else start_x
-        cropped = big_clip.crop(x_center=x_center_func, y_center=big_h/2,
-                                width=target_w, height=target_h)
-        return cropped.set_duration(duration)
+
+        cropped = big_clip.with_effects([
+            Crop(x_center=x_center_func, y_center=big_h / 2,
+                 width=target_w, height=target_h)
+        ])
+        return cropped.with_duration(duration)
 
     elif effect_type == "pan_right":
-        big_clip = clip.resize(1.2)
+        big_clip = clip.with_effects([Resize(1.2)])
         big_w, big_h = big_clip.size
         start_x = 0
         end_x = big_w - target_w
+
         def x_center_func(t):
             return start_x + (end_x - start_x) * (t / duration) if duration > 0 else start_x
-        cropped = big_clip.crop(x_center=x_center_func, y_center=big_h/2,
-                                width=target_w, height=target_h)
-        return cropped.set_duration(duration)
+
+        cropped = big_clip.with_effects([
+            Crop(x_center=x_center_func, y_center=big_h / 2,
+                 width=target_w, height=target_h)
+        ])
+        return cropped.with_duration(duration)
 
     # Fallback (should never be reached)
-    return clip.resize(newsize=(target_w, target_h)).set_duration(duration)
+    return clip.with_effects([Resize(new_size=(target_w, target_h))]).with_duration(duration)
 
 
 def _prepare_clip(
@@ -105,17 +124,19 @@ def _prepare_clip(
     else:
         clip = VideoFileClip(file_path)
         if clip.duration > duration:
-            clip = clip.subclip(0, duration)
+            clip = clip.subclipped(0, duration)
         elif clip.duration < duration:
             loops_needed = int(duration // clip.duration) + 1
-            clip = concatenate_videoclips([clip] * loops_needed).subclip(0, duration)
+            clip = concatenate_videoclips([clip] * loops_needed).subclipped(0, duration)
 
         target_w, target_h = target_size
         clip_w, clip_h = clip.size
         scale = max(target_w / clip_w, target_h / clip_h)
-        clip = clip.resize(scale)
-        clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2,
-                         width=target_w, height=target_h)
+        clip = clip.with_effects([Resize(scale)])
+        clip = clip.with_effects([
+            Crop(x_center=clip.w / 2, y_center=clip.h / 2,
+                 width=target_w, height=target_h)
+        ])
         return clip
 
 
@@ -173,7 +194,7 @@ def assemble_video(
     final_video = concatenate_videoclips(clips, method="compose")
 
     if audio is not None:
-        final_video = final_video.set_audio(audio)
+        final_video = final_video.with_audio(audio)
 
     # Write output
     logger.info(f"Rendering video to {output_path}...")
