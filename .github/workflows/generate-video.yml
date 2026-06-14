@@ -98,6 +98,9 @@ jobs:
           QUALITY: ${{ github.event.inputs.quality }}
           VOICEOVER_TYPE: ${{ github.event.inputs.voiceover_type }}
           AUDIO_URL: ${{ github.event.inputs.audio_url }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
         run: python src/main.py
 
       - name: Upload output video as artifact
