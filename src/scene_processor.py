@@ -1,15 +1,14 @@
 """
-Scene Processor – Splits script into logical scenes and extracts meaningful keywords.
-Uses spaCy for part-of-speech tagging, named entity recognition, and NOW sentence splitting.
+Scene Processor – Splits script into logical scenes, extracts keywords,
+and NOW generates thematic visual search queries to avoid irrelevant nature clips.
 """
 
 import re
 import logging
-from typing import List
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Lazy load spaCy to avoid heavy import at module level
 _nlp = None
 
 def _get_nlp():
@@ -22,6 +21,53 @@ def _get_nlp():
             logger.error("spaCy model 'en_core_web_sm' not found. Install with: python -m spacy download en_core_web_sm")
             raise
     return _nlp
+
+
+# ---------- Visual Theme Mapping ----------
+# Maps extracted keywords (or categories) to stock‑friendly visual search phrases.
+# This ensures we get political/dark/money visuals instead of nature clips.
+
+THEME_MAP = {
+    "trump": ["president", "american politics", "white house speech"],
+    "president": ["political leader", "election debate"],
+    "pentagon": ["military headquarters", "confidential meeting", "security briefing"],
+    "classified": ["top secret documents", "intelligence files"],
+    "gambling": ["casino chips", "roulette table", "betting money"],
+    "betting": ["sports betting", "gambling addiction", "casino"],
+    "nba": ["basketball court", "sports news", "press conference"],
+    "coach": ["sports coach", "locker room"],
+    "arrested": ["police handcuffs", "prison", "crime scene"],
+    "insider trading": ["stock market graph", "money corruption", "fraud"],
+    "money": ["cash stacks", "finance danger", "dollar bills"],
+    "danger": ["warning sign", "red alert", "emergency"],
+    "politics": ["political debate", "capitol building", "news broadcast"],
+    "regulatory framework": ["government building", "legal documents", "courtroom"],
+    "investigation": ["detective", "crime evidence", "police lights"],
+    "addiction": ["person in dark room", "struggle", "depression"],
+    "jim": [],  # skip name
+    "madura": [],  # specific entity, may fall back to generic politics
+    "will trump": ["president trump", "political rally"],
+    "trump photographed": ["president photo op", "press conference"],
+    "pentagon activities": ["military operation", "situation room"],
+    "classified information": ["secret files", "intelligence leak"],
+    "pete rose": ["baseball", "sports betting scandal"],
+}
+
+def _get_thematic_queries(keywords: List[str]) -> List[str]:
+    """Generate visual search phrases based on extracted keywords."""
+    thematic = []
+    for word in keywords:
+        word_lower = word.lower()
+        if word_lower in THEME_MAP:
+            thematic.extend(THEME_MAP[word_lower])
+    # Remove duplicates, keep order
+    seen = set()
+    result = []
+    for t in thematic:
+        if t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result
 
 
 def split_script(text: str, sentences_per_scene: int = 3) -> List[str]:
@@ -53,10 +99,8 @@ def split_script(text: str, sentences_per_scene: int = 3) -> List[str]:
     sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
     if len(sentences) <= sentences_per_scene:
-        # Very few sentences; keep as one scene
         return [text.strip()] if sentences else []
 
-    # Group sentences into scenes
     new_scenes = []
     for i in range(0, len(sentences), sentences_per_scene):
         chunk = " ".join(sentences[i:i + sentences_per_scene])
@@ -66,10 +110,11 @@ def split_script(text: str, sentences_per_scene: int = 3) -> List[str]:
     return new_scenes
 
 
-def extract_keywords(scene_text: str, max_keywords: int = 10) -> List[str]:
+def extract_keywords_and_visual_queries(scene_text: str, max_keywords: int = 10) -> Tuple[List[str], List[str]]:
     """
-    Extract key nouns, proper nouns, adjectives, and named entities from scene text.
-    Returns a list of unique keywords, ordered by relevance score.
+    Returns:
+        keywords: list of extracted nouns/entities (for semantic matching)
+        visual_queries: list of thematic stock‑friendly search phrases
     """
     nlp = _get_nlp()
     doc = nlp(scene_text)
@@ -100,4 +145,9 @@ def extract_keywords(scene_text: str, max_keywords: int = 10) -> List[str]:
             keyword_map[w]["count"] += 1
 
     sorted_keywords = sorted(keyword_map.values(), key=lambda x: (x["priority"], x["count"]), reverse=True)
-    return [kw["text"] for kw in sorted_keywords[:max_keywords]]
+    keywords = [kw["text"] for kw in sorted_keywords[:max_keywords]]
+
+    # Generate thematic visual queries from these keywords
+    visual_queries = _get_thematic_queries(keywords)
+
+    return keywords, visual_queries
