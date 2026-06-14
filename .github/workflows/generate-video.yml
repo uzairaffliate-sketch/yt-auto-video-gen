@@ -49,11 +49,14 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cache Python dependencies
+      # Force cache to be invalidated if requirements.txt changed
+      - name: Cache Python dependencies (with timestamp)
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: Cache spaCy model
         uses: actions/cache@v4
@@ -75,13 +78,14 @@ jobs:
       - name: Install Python packages
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Verify critical packages
         run: |
           python -c "import moviepy; print('moviepy version:', moviepy.__version__)"
           python -c "import PIL; print('Pillow version:', PIL.__version__)"
           python -c "import aiohttp; print('aiohttp version:', aiohttp.__version__)"
+          pip list | grep -E "moviepy|Pillow|aiohttp"
 
       - name: Download spaCy model
         run: |
