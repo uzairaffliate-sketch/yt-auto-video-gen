@@ -84,7 +84,6 @@ async def _search_pexels(session: ClientSession, query: str, media_type: str = "
         params_vid = {"query": query, "per_page": MAX_MEDIA_PER_SOURCE}
         data_vid = await _fetch_json(session, url_vid, headers=headers, params=params_vid)
         for video in data_vid.get("videos", []):
-            # pick highest quality video file
             video_files = video.get("video_files", [])
             if video_files:
                 best = max(video_files, key=lambda x: x.get("width", 0) * x.get("height", 0))
@@ -107,7 +106,6 @@ async def _search_pixabay(session: ClientSession, query: str, media_type: str = 
 
     results = []
     base_url = "https://pixabay.com/api/"
-    # Images
     if media_type in ("both", "image"):
         params = {"key": PIXABAY_API_KEY, "q": query, "image_type": "photo", "per_page": MAX_MEDIA_PER_SOURCE}
         data = await _fetch_json(session, base_url, params=params)
@@ -120,13 +118,11 @@ async def _search_pixabay(session: ClientSession, query: str, media_type: str = 
                 "thumbnail_url": hit["previewURL"]
             })
 
-    # Videos
     if media_type in ("both", "video"):
         params_vid = {"key": PIXABAY_API_KEY, "q": query, "video_type": "film", "per_page": MAX_MEDIA_PER_SOURCE}
         data_vid = await _fetch_json(session, base_url + "videos/", params=params_vid)
         for hit in data_vid.get("hits", []):
             videos = hit.get("videos", {})
-            # Choose large or medium
             for size in ["large", "medium", "small"]:
                 if size in videos:
                     results.append({
@@ -169,7 +165,6 @@ async def _search_burst(session: ClientSession, query: str) -> List[Dict]:
     if not BURST_API_KEY:
         return []
 
-    # Burst requires a partner API key; their official endpoint:
     url = f"https://burst.shopify.com/api/v1/search?q={quote_plus(query)}&per_page={MAX_MEDIA_PER_SOURCE}"
     headers = {"Authorization": f"Bearer {BURST_API_KEY}"}
     data = await _fetch_json(session, url, headers=headers)
@@ -200,19 +195,17 @@ async def _search_mixkit(session: ClientSession, query: str) -> List[Dict]:
         if not a_tag:
             continue
         video_page = "https://mixkit.co" + a_tag["href"] if a_tag["href"].startswith("/") else a_tag["href"]
-        # Extract thumbnail
         img = card.find("img")
         thumb = img["src"] if img else ""
-        # Get title
         title_tag = card.find("h3") or card.find("p")
         title = title_tag.get_text(strip=True) if title_tag else ""
         results.append({
-            "url": video_page,      # will download video after navigating to download page
+            "url": video_page,
             "title": title,
             "source": "Mixkit",
             "type": "video",
             "thumbnail_url": thumb,
-            "_needs_page": True     # mark that we need to fetch the actual video URL
+            "_needs_page": True
         })
     return results
 
@@ -228,7 +221,6 @@ async def _search_coverr(session: ClientSession, query: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
     results = []
     for item in soup.select(".video-item, .video-entry")[:MAX_MEDIA_PER_SOURCE]:
-        # Find download link
         a_tag = item.find("a", href=re.compile(r"/video/|/download/"))
         if not a_tag:
             continue
@@ -281,64 +273,71 @@ async def _search_videvo(session: ClientSession, query: str) -> List[Dict]:
 
 # --------------------------- Download helpers for video scraped pages ---------------------------
 
-async def _resolve_mixkit_video_url(session: ClientSession, video_page_url: str) -> Optional[str]:
-    """Given a Mixkit video page, extract the direct MP4 download link."""
+async def _resolve_mixkit_video_url(session: ClientSession, video_page_url: str) -> Tuple[Optional[str], str]:
+    """Given a Mixkit video page, extract the direct MP4 download link and a better title."""
     html = await _fetch_html(session, video_page_url)
     if not html:
-        return None
+        return None, ""
     soup = BeautifulSoup(html, "html.parser")
-    # Look for a download button with data-download-url or a video source
+    # Title from page heading
+    title = ""
+    title_tag = soup.find("h1") or soup.find("title")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+    # Download link
     download_btn = soup.find("a", {"class": "download-btn"}) or soup.find("a", text=re.compile(r"Download", re.I))
     if download_btn and download_btn.get("href"):
-        return download_btn["href"]
+        return download_btn["href"], title
     video_tag = soup.find("video")
     if video_tag and video_tag.get("src"):
-        return video_tag["src"]
-    # fallback: search for any .mp4 link
+        return video_tag["src"], title
     for link in soup.find_all("a", href=True):
         if link["href"].endswith(".mp4"):
-            return link["href"]
-    return None
+            return link["href"], title
+    return None, title
 
-async def _resolve_coverr_video_url(session: ClientSession, video_page_url: str) -> Optional[str]:
-    """Given a Coverr video page, extract direct MP4."""
+async def _resolve_coverr_video_url(session: ClientSession, video_page_url: str) -> Tuple[Optional[str], str]:
+    """Given a Coverr video page, extract direct MP4 and a better title."""
     html = await _fetch_html(session, video_page_url)
     if not html:
-        return None
+        return None, ""
     soup = BeautifulSoup(html, "html.parser")
-    # Coverr often has a <source> tag inside <video>
+    title = ""
+    title_tag = soup.find("h1") or soup.find("title")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
     source = soup.find("source")
     if source and source.get("src"):
-        return source["src"]
-    # Or a link with .mp4
+        return source["src"], title
     for a in soup.find_all("a", href=re.compile(r'\.mp4')):
-        return a["href"]
-    return None
+        return a["href"], title
+    return None, title
 
-async def _resolve_videvo_video_url(session: ClientSession, video_page_url: str) -> Optional[str]:
-    """Given a Videvo page, extract free clip download URL."""
+async def _resolve_videvo_video_url(session: ClientSession, video_page_url: str) -> Tuple[Optional[str], str]:
+    """Given a Videvo page, extract free clip download URL and a better title."""
     html = await _fetch_html(session, video_page_url)
     if not html:
-        return None
+        return None, ""
     soup = BeautifulSoup(html, "html.parser")
-    # Often a script with 'clipData'
+    title = ""
+    title_tag = soup.find("h1") or soup.find("title")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
     scripts = soup.find_all("script")
     for script in scripts:
         if script.string and "clipData" in script.string:
-            # attempt to extract JSON
             import json
             try:
                 match = re.search(r'clipData\s*=\s*(\{.*?\});', script.string, re.DOTALL)
                 if match:
                     data = json.loads(match.group(1))
                     if "url" in data:
-                        return data["url"]
+                        return data["url"], title
             except:
                 pass
-    # fallback to direct link
     for a in soup.find_all("a", href=re.compile(r'\.mp4')):
-        return a["href"]
-    return None
+        return a["href"], title
+    return None, title
 
 # --------------------------- Aggregator ---------------------------
 
@@ -348,14 +347,13 @@ async def _fetch_media_for_one_scene(session: ClientSession, keywords: List[str]
     For one scene, search all sources and return list of media dicts.
     Downloads each media file to temp_dir/scene_{scene_idx}/.
     """
-    query = " ".join(keywords[:5])  # combine top keywords for search
+    query = " ".join(keywords[:5])
     if not query.strip():
         query = "abstract background"
 
     scene_folder = temp_dir / f"scene_{scene_idx}"
     ensure_output_dir(scene_folder)
 
-    # Run all source searches concurrently
     tasks = [
         _search_pexels(session, query),
         _search_pixabay(session, query),
@@ -370,25 +368,26 @@ async def _fetch_media_for_one_scene(session: ClientSession, keywords: List[str]
     for res in results_nested:
         all_items.extend(res)
 
-    # Resolve video URLs that need page scraping
+    # Resolve video URLs that need page scraping, and update title if possible
     for item in all_items:
         if item.get("_needs_page"):
             item.pop("_needs_page", None)
             real_url = None
+            page_title = ""
             if "mixkit" in item["url"]:
-                real_url = await _resolve_mixkit_video_url(session, item["url"])
+                real_url, page_title = await _resolve_mixkit_video_url(session, item["url"])
             elif "coverr" in item["url"]:
-                real_url = await _resolve_coverr_video_url(session, item["url"])
+                real_url, page_title = await _resolve_coverr_video_url(session, item["url"])
             elif "videvo" in item["url"]:
-                real_url = await _resolve_videvo_video_url(session, item["url"])
+                real_url, page_title = await _resolve_videvo_video_url(session, item["url"])
             if real_url:
                 item["url"] = real_url
+                if page_title:
+                    item["title"] = page_title   # <-- better title from video page
             else:
-                continue  # skip if resolution fails
+                continue
 
-        # Download file
         ext = ".mp4" if item["type"] == "video" else ".jpg"
-        # generate a unique filename based on URL hash
         fname = hashlib.md5(item["url"].encode()).hexdigest() + ext
         file_path = scene_folder / fname
         if await asyncio.to_thread(download_file, item["url"], file_path):
@@ -400,13 +399,8 @@ async def _fetch_media_for_one_scene(session: ClientSession, keywords: List[str]
         if not item.get("title"):
             item["title"] = ""
 
-    # keep only up to max_total items (but we already limited per source, but multiple sources may exceed)
-    # Prioritize videos? No specific rule. Just take first max_total.
     final_items = all_items[:max_total]
-
-    # Remove items that didn't download successfully
     final_items = [i for i in final_items if i.get("downloaded")]
-
     return final_items
 
 # --------------------------- Public API ---------------------------
