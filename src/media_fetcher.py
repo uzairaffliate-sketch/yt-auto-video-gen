@@ -1,7 +1,14 @@
 """
 Multi‑source stock media aggregator – fetches images & videos from all available free sources.
 Includes free image sources that need NO API key.
-Now supports visual_queries_list for thematic search and Google Images scraping.
+Supports visual_queries_list for thematic search, and image search via
+Bing Image Search scraping (replaces the broken Google Images scraper).
+
+For each scene we fetch BOTH images and videos from every available source
+(API-key sources + key-free scraped/API sources), then return a mixed pool.
+media_selector.py picks the best item from that pool regardless of type, so
+a scene can end up with either an image or a video — whichever is most
+relevant — exactly as requested.
 """
 
 import asyncio, hashlib, logging, os, re, json
@@ -26,6 +33,20 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "")
 BURST_API_KEY = os.getenv("BURST_API_KEY", "")
+
+# Warn (once, at import time) about missing API keys so it's obvious in the
+# GitHub Actions logs why certain sources return zero results. These sources
+# generally have the BEST topical relevance (real titles/tags), so missing
+# keys directly hurts match quality.
+if not PEXELS_API_KEY:
+    logger.warning("PEXELS_API_KEY not set — Pexels image/video search disabled. "
+                    "Get a free key at https://www.pexels.com/api/ and add it as a GitHub Secret.")
+if not PIXABAY_API_KEY:
+    logger.warning("PIXABAY_API_KEY not set — Pixabay image/video search disabled. "
+                    "Get a free key at https://pixabay.com/api/docs/ and add it as a GitHub Secret.")
+if not UNSPLASH_ACCESS_KEY:
+    logger.warning("UNSPLASH_ACCESS_KEY not set — Unsplash image search disabled. "
+                    "Get a free key at https://unsplash.com/developers and add it as a GitHub Secret.")
 
 # ---------- Async HTTP helpers ----------
 async def _fetch_json(session, url, headers=None, params=None):
@@ -368,50 +389,57 @@ async def _search_stocksnap(session, query):
         })
     return results
 
-# ---------- Google Images Scraping (TITLE FIXED) ----------
-async def _search_google_images(session, query):
+# ---------- Bing Image Search Scraping (replaces broken Google Images scraper) ----------
+async def _search_bing_images(session, query):
     """
-    Scrape Google Images search results for direct image URLs.
-    Title is set to the search query to ensure high semantic match.
+    Scrape Bing Image Search results for direct, high-resolution image URLs.
+
+    Bing's image search results page embeds each result's metadata as a JSON
+    blob inside the `m` attribute of `<a class="iusc">` tags, e.g.:
+        <a class="iusc" m='{"murl":"https://...","t":"Some Title", ...}'>
+    `murl` is the original (often high-res) image URL. This is far more
+    stable than Google's heavily obfuscated/JS-rendered results and needs
+    no API key.
     """
-    url = f"https://www.google.com/search?q={quote_plus(query)}&tbm=isch&sclient=img"
-    html = await _fetch_html(session, url, headers={"User-Agent": USER_AGENT})
+    url = f"https://www.bing.com/images/search?q={quote_plus(query)}&form=HDRSC2&first=1"
+    html = await _fetch_html(session, url, headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"})
     if not html:
         return []
-    pattern = r'"ou":"(.*?)"'
-    matches = re.findall(pattern, html)
+
+    soup = BeautifulSoup(html, "html.parser")
     results = []
-    for img_url in matches:
-        img_url = img_url.replace("\\u003d", "=").replace("\\u0026", "&")
-        if not img_url.startswith("http"):
+    for a_tag in soup.select("a.iusc")[: MAX_MEDIA_PER_SOURCE * 2]:
+        meta_raw = a_tag.get("m")
+        if not meta_raw:
             continue
+        try:
+            meta = json.loads(meta_raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        img_url = meta.get("murl")
+        if not img_url or not img_url.startswith("http"):
+            continue
+
+        title = meta.get("t", "") or query
+        thumb = meta.get("turl", img_url)
+
         results.append({
             "url": img_url,
-            "title": query,                 # ✅ FIXED – Title = search query
-            "source": "Google Images",
+            "title": title,
+            "source": "Bing Images",
             "type": "image",
-            "thumbnail_url": img_url,
+            "thumbnail_url": thumb,
         })
         if len(results) >= MAX_MEDIA_PER_SOURCE:
             break
+
     return results
 
 # ---------- Aggregator ----------
 
-async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
-                                     visual_queries=None, max_total=5):
-    primary_query = " ".join(keywords[:5])
-    if visual_queries:
-        extra = " ".join(visual_queries[:3])
-        query = f"{primary_query} {extra}"
-    else:
-        query = primary_query
-    if not query.strip():
-        query = "abstract background"
-
-    scene_folder = temp_dir / f"scene_{scene_idx}"
-    ensure_output_dir(scene_folder)
-
+async def _run_all_sources(session, query):
+    """Run every media source concurrently for a single query string."""
     tasks = [
         _search_pexels(session, query),
         _search_pixabay(session, query),
@@ -422,14 +450,44 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
         _search_videvo(session, query),
         _search_wikimedia(session, query),
         _search_stocksnap(session, query),
-        _search_google_images(session, query),
+        _search_bing_images(session, query),
     ]
-    results_nested = await asyncio.gather(*tasks)
+    results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+    all_items = []
+    for res in results_nested:
+        if isinstance(res, Exception):
+            logger.debug(f"Source raised exception for query '{query}': {res}")
+            continue
+        all_items.extend(res)
+    return all_items
+
+
+async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
+                                     visual_queries=None, max_total=5):
+    primary_query = " ".join(keywords[:5])
+    if not primary_query.strip():
+        primary_query = "abstract background"
+
+    scene_folder = temp_dir / f"scene_{scene_idx}"
+    ensure_output_dir(scene_folder)
+
+    # Run searches for:
+    #  1. The primary keyword query (literal topic terms from the script)
+    #  2. Each thematic visual query individually (e.g. "casino chips",
+    #     "white house speech") — kept separate so each thematic phrase is
+    #     a clean, focused search term rather than being mashed together
+    #     with the primary keywords into one long noisy query.
+    queries_to_run = [primary_query]
+    if visual_queries:
+        queries_to_run.extend(visual_queries[:3])
+
+    results_nested = await asyncio.gather(*[_run_all_sources(session, q) for q in queries_to_run])
     all_items = []
     for res in results_nested:
         all_items.extend(res)
 
     # Resolve video URLs that need page scraping
+    resolved_items = []
     for item in all_items:
         if item.get("_needs_page"):
             item.pop("_needs_page", None)
@@ -446,7 +504,25 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
                     item["title"] = page_title
             else:
                 continue
+        resolved_items.append(item)
 
+    # Deduplicate by URL before downloading (avoid downloading the same
+    # asset multiple times if it shows up across queries/sources).
+    deduped = []
+    seen_urls = set()
+    for item in resolved_items:
+        if item["url"] not in seen_urls:
+            deduped.append(item)
+            seen_urls.add(item["url"])
+
+    # Download everything (bounded by overall MAX_CONCURRENT_REQUESTS via
+    # the session connector). We download more than max_total so that
+    # downstream selection has a real pool of both images AND videos to
+    # choose from, then trim afterwards.
+    download_limit = max(max_total * 4, 20)
+    candidates = deduped[:download_limit]
+
+    for item in candidates:
         ext = ".mp4" if item["type"] == "video" else ".jpg"
         fname = hashlib.md5(item["url"].encode()).hexdigest() + ext
         file_path = scene_folder / fname
@@ -454,19 +530,39 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
             item["file_path"] = str(file_path)
             item["downloaded"] = True
         else:
-            continue
+            item["downloaded"] = False
         if not item.get("title"):
             item["title"] = ""
 
-    # Limit to max_total, remove duplicates by URL
+    downloaded = [i for i in candidates if i.get("downloaded")]
+
+    # Interleave images and videos so neither type is starved when trimming
+    # to max_total (e.g. if videos happen to come back first across all
+    # sources, images wouldn't otherwise get a chance).
+    images = [i for i in downloaded if i.get("type") == "image"]
+    videos = [i for i in downloaded if i.get("type") != "image"]
+
     final_items = []
-    seen_urls = set()
-    for i in all_items:
-        if i.get("downloaded") and i["url"] not in seen_urls:
-            final_items.append(i)
-            seen_urls.add(i["url"])
+    i_idx, v_idx = 0, 0
+    while len(final_items) < max_total and (i_idx < len(images) or v_idx < len(videos)):
+        if i_idx < len(images):
+            final_items.append(images[i_idx])
+            i_idx += 1
         if len(final_items) >= max_total:
             break
+        if v_idx < len(videos):
+            final_items.append(videos[v_idx])
+            v_idx += 1
+
+    if not final_items:
+        logger.warning(f"Scene {scene_idx}: no media could be downloaded for query '{primary_query}' "
+                        f"(thematic queries: {visual_queries}).")
+    else:
+        logger.info(f"Scene {scene_idx}: gathered {len(final_items)} media items "
+                     f"({sum(1 for i in final_items if i['type']=='image')} images, "
+                     f"{sum(1 for i in final_items if i['type']=='video')} videos) "
+                     f"from sources: {sorted(set(i['source'] for i in final_items))}")
+
     return final_items
 
 async def fetch_media_for_scenes(scene_keywords_list, temp_dir, visual_queries_list=None, max_per_scene=5):
