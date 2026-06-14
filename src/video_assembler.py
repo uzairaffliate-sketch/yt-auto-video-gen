@@ -1,5 +1,5 @@
 """
-Video Assembler – uses MoviePy to combine media clips, apply random transitions,
+Video Assembler – uses MoviePy to combine media clips, apply visible fade-to-black transitions,
 enforce aspect ratio & resolution, and sync with voiceover audio.
 Supports silent video (no audio) by setting audio_path=None.
 """
@@ -22,37 +22,34 @@ from moviepy.editor import (
     concatenate_videoclips,
     vfx,
 )
-from moviepy.video.fx.resize import resize
 
 logger = logging.getLogger(__name__)
 
-# Available transition effects (randomly chosen between scenes)
-# Note: MoviePy 1.0.3 only supports crossfadein safely.
-TRANSITIONS = ["fade"]  # we'll map all to crossfadein for now
-
-# Default transition duration in seconds
-TRANSITION_DURATION = 0.5
+# Transition duration (now clearly visible)
+TRANSITION_DURATION = 0.8  # seconds
 
 # Default scene duration when no audio is provided
 DEFAULT_SCENE_DURATION = 5.0  # seconds
 
 
-def _apply_transition(clip, transition_name: str, duration: float = TRANSITION_DURATION):
-    """
-    Apply a transition effect to the start of a clip.
-    Currently all transitions use crossfadein (fade from black).
-    """
-    # All transitions resolve to crossfadein for compatibility
+def _apply_in_transition(clip, duration: float = TRANSITION_DURATION):
+    """Fade in from black at the beginning of a clip."""
     return clip.crossfadein(duration)
+
+def _apply_out_transition(clip, duration: float = TRANSITION_DURATION):
+    """Fade out to black at the end of a clip."""
+    return clip.crossfadeout(duration)
 
 
 def _prepare_clip(
     media_item: Dict,
     duration: float,
     target_size: Tuple[int, int],
-    transition: str = "fade",
-    is_first: bool = False,
 ) -> VideoFileClip:
+    """
+    Load and prepare a media clip (image or video) to fit duration and size.
+    Transitions are applied separately by the assembler.
+    """
     file_path = media_item["file_path"]
     media_type = media_item.get("type", "image")
 
@@ -72,9 +69,6 @@ def _prepare_clip(
     clip = clip.resize(scale)
     clip = clip.crop(x_center=clip.w / 2, y_center=clip.h / 2,
                      width=target_w, height=target_h)
-
-    if not is_first:
-        clip = _apply_transition(clip, transition)
 
     return clip
 
@@ -106,25 +100,17 @@ def assemble_video(
 
     clips = []
     for i, media in enumerate(media_list):
-        # Always use 'fade' transition
-        if i == 0:
-            transition = None
-        else:
-            transition = 'fade'  # random.choice(TRANSITIONS) if multiple available
-
-        logger.debug(f"Scene {i+1}: media={media.get('file_path')}, duration={scene_duration:.2f}s, transition={transition}")
-        clip = _prepare_clip(media, scene_duration, resolution,
-                             transition=transition, is_first=(i == 0))
+        clip = _prepare_clip(media, scene_duration, resolution)
         clips.append(clip)
 
-    clips_total_duration = sum(c.duration for c in clips)
-    duration_diff = total_duration - clips_total_duration
-    if duration_diff != 0:
-        logger.info(f"Adjusting last clip duration by {duration_diff:.2f}s to match total duration.")
-        last_clip = clips[-1]
-        new_last = last_clip.set_duration(last_clip.duration + duration_diff)
-        clips[-1] = new_last
+    # Apply fade-in to all clips except the first, and fade-out to all except the last
+    for i in range(len(clips)):
+        if i > 0:
+            clips[i] = _apply_in_transition(clips[i])
+        if i < len(clips) - 1:
+            clips[i] = _apply_out_transition(clips[i])
 
+    # Concatenate with compose to handle overlapping transitions correctly
     final_video = concatenate_videoclips(clips, method="compose")
 
     if audio is not None:
