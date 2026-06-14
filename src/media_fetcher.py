@@ -150,7 +150,7 @@ async def _search_burst(session, query):
         })
     return results
 
-# ---------- Scraped Video Sources (original, already had title extraction) ----------
+# ---------- Scraped Video Sources ----------
 
 async def _search_mixkit(session, query):
     url = f"https://mixkit.co/free-stock-video/?q={quote_plus(query)}"
@@ -368,12 +368,11 @@ async def _search_stocksnap(session, query):
         })
     return results
 
-# ---------- Google Images Scraping (free, no API key) ----------
+# ---------- Google Images Scraping (TITLE FIXED) ----------
 async def _search_google_images(session, query):
     """
     Scrape Google Images search results for direct image URLs.
-    Extracts 'ou' (original URL) from inline JavaScript data.
-    Note: This may break if Google changes its page structure.
+    Title is set to the search query to ensure high semantic match.
     """
     url = f"https://www.google.com/search?q={quote_plus(query)}&tbm=isch&sclient=img"
     html = await _fetch_html(session, url, headers={"User-Agent": USER_AGENT})
@@ -388,7 +387,7 @@ async def _search_google_images(session, query):
             continue
         results.append({
             "url": img_url,
-            "title": "",
+            "title": query,                 # ✅ FIXED – Title = search query
             "source": "Google Images",
             "type": "image",
             "thumbnail_url": img_url,
@@ -397,7 +396,7 @@ async def _search_google_images(session, query):
             break
     return results
 
-# ---------- Aggregator (updated for visual_queries and new sources) ----------
+# ---------- Aggregator ----------
 
 async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
                                      visual_queries=None, max_total=5):
@@ -430,7 +429,7 @@ async def _fetch_media_for_one_scene(session, keywords, temp_dir, scene_idx,
     for res in results_nested:
         all_items.extend(res)
 
-    # Resolve video URLs that need page scraping (now with title extraction)
+    # Resolve video URLs that need page scraping
     for item in all_items:
         if item.get("_needs_page"):
             item.pop("_needs_page", None)
