@@ -1,7 +1,7 @@
 """
 Video Assembler – uses MoviePy 2.x to combine media clips, apply visible
 fade-to-black transitions, and a gentle cinematic Ken Burns effect on still
-images (subtle zoom in/out, pan left/right/up/down, diagonal zoom+pan).
+images (subtle zoom in/out, pan left/right/up/down).
 Supports silent video.
 """
 
@@ -42,117 +42,84 @@ def _apply_out_transition(clip, duration=TRANSITION_DURATION):
     return clip.with_effects([CrossFadeOut(duration)])
 
 
-def _crop_frame(frame, x_center, y_center, w, h):
-    """Crop a (H, W, 3) numpy frame around the given center, clamped to bounds."""
-    fh, fw = frame.shape[:2]
-    w = min(int(w), fw)
-    h = min(int(h), fh)
-    x1 = int(round(x_center - w / 2))
-    y1 = int(round(y_center - h / 2))
-    # Clamp so we never read outside the frame
-    x1 = max(0, min(x1, fw - w))
-    y1 = max(0, min(y1, fh - h))
-    return frame[y1:y1 + h, x1:x1 + w]
-
-
 def _ken_burns_effect(clip, duration, target_size):
     """
-    Apply a gentle, cinematic Ken Burns effect to an image clip (MoviePy 2.x).
+    Smooth, subtle Ken Burns effect for MoviePy 2.x.
 
-    Variants: slow zoom in / out, gentle pan (left, right, up, down) and
-    diagonal pan+zoom combos. Motion is intentionally subtle so it feels
-    smooth and professional, not jarring.
-
-    Implemented with clip.transform() because MoviePy 2.x Crop/Resize do
-    not accept time-varying callables.
+    Key idea to avoid jitter/shutter:
+      * Upscale the image ONCE to a large base (no per-frame resize of source).
+      * Every frame we read a window from that base whose size changes
+        smoothly (for zoom) and/or whose position changes smoothly (for pan),
+        then resize that window to the EXACT target size with PIL/LANCZOS.
+        Because the output size is constant every frame, there is no abrupt
+        pixel snapping / shutter.
     """
     target_w, target_h = target_size
     clip = clip.with_duration(duration)
 
-    # Keep motion subtle.
-    ZOOM_AMOUNT = 0.12     # max 12% zoom over the whole clip (was 30%)
-    UPSCALE = 1.18         # headroom for panning (gives ~18% slack)
+    ZOOM = 0.08          # very subtle 8% zoom across the whole clip
+    PAN_FRACTION = 0.10  # pan across at most 10% of the image
+
+    # Base must be big enough for both max zoom AND pan headroom.
+    base_scale = 1.0 + ZOOM + PAN_FRACTION
+    base = clip.with_effects([
+        Resize(new_size=(int(target_w * base_scale), int(target_h * base_scale)))
+    ])
 
     effect_type = random.choice([
         "zoom_in", "zoom_out",
         "pan_left", "pan_right", "pan_up", "pan_down",
-        "zoom_in_pan_right", "zoom_in_pan_left",
     ])
 
     def ease(p):
-        """Ease-in-out so motion starts/stops smoothly (no abrupt jerk)."""
+        # smoothstep: gentle start and stop
         return p * p * (3 - 2 * p)
 
-    # ---- Pure zoom (centered) ----
-    if effect_type in ("zoom_in", "zoom_out"):
-        max_zoom = 1.0 + ZOOM_AMOUNT
-        base = clip.with_effects([
-            Resize(new_size=(int(target_w * max_zoom), int(target_h * max_zoom)))
-        ])
-        bw, bh = base.size
-
-        def make_frame(get_frame, t):
-            frame = get_frame(t)
-            p = ease((t / duration) if duration > 0 else 0.0)
-            if effect_type == "zoom_in":
-                scale = 1.0 + ZOOM_AMOUNT * p
-            else:
-                scale = max_zoom - ZOOM_AMOUNT * p
-            crop_w = min(int(target_w * max_zoom / scale), bw)
-            crop_h = min(int(target_h * max_zoom / scale), bh)
-            return _crop_frame(frame, bw / 2, bh / 2, crop_w, crop_h)
-
-        moving = base.transform(make_frame, apply_to=[])
-        return moving.with_effects([Resize(new_size=(target_w, target_h))]).with_duration(duration)
-
-    # ---- Diagonal: gentle zoom-in while panning horizontally ----
-    if effect_type in ("zoom_in_pan_right", "zoom_in_pan_left"):
-        max_zoom = 1.0 + ZOOM_AMOUNT
-        base = clip.with_effects([
-            Resize(new_size=(int(target_w * UPSCALE * max_zoom),
-                             int(target_h * UPSCALE * max_zoom)))
-        ])
-        bw, bh = base.size
-
-        def make_frame(get_frame, t):
-            frame = get_frame(t)
-            p = ease((t / duration) if duration > 0 else 0.0)
-            scale = 1.0 + ZOOM_AMOUNT * p
-            crop_w = min(int(target_w * max_zoom / scale), bw)
-            crop_h = min(int(target_h * max_zoom / scale), bh)
-            max_x = max(0, bw - crop_w)
-            if effect_type == "zoom_in_pan_right":
-                x_center = (max_x * p) + crop_w / 2
-            else:
-                x_center = (max_x - max_x * p) + crop_w / 2
-            return _crop_frame(frame, x_center, bh / 2, crop_w, crop_h)
-
-        moving = base.transform(make_frame, apply_to=[])
-        return moving.with_effects([Resize(new_size=(target_w, target_h))]).with_duration(duration)
-
-    # ---- Gentle pans (left / right / up / down) ----
-    base = clip.with_effects([Resize(UPSCALE)])
-    bw, bh = base.size
-    max_x = max(0, bw - target_w)
-    max_y = max(0, bh - target_h)
-
     def make_frame(get_frame, t):
-        frame = get_frame(t)
-        p = ease((t / duration) if duration > 0 else 0.0)
-        x_center = bw / 2
-        y_center = bh / 2
+        frame = get_frame(t)                       # full big frame (constant size)
+        fh, fw = frame.shape[:2]
+        p = ease(t / duration) if duration > 0 else 0.0
+
+        # --- decide zoom level (window size as fraction of target) ---
+        if effect_type == "zoom_in":
+            win_scale = 1.0 - ZOOM * p             # window shrinks -> looks like zoom in
+        elif effect_type == "zoom_out":
+            win_scale = (1.0 - ZOOM) + ZOOM * p    # window grows -> zoom out
+        else:
+            win_scale = 1.0 - ZOOM * 0.5           # constant mild crop for pans
+
+        win_w = int(target_w * win_scale)
+        win_h = int(target_h * win_scale)
+        win_w = min(win_w, fw)
+        win_h = min(win_h, fh)
+
+        # --- decide window center (pan) ---
+        max_x = fw - win_w
+        max_y = fh - win_h
+        cx = fw / 2.0
+        cy = fh / 2.0
         if effect_type == "pan_left":
-            x_center = (max_x - max_x * p) + target_w / 2
+            cx = (max_x - max_x * p) + win_w / 2.0
         elif effect_type == "pan_right":
-            x_center = (max_x * p) + target_w / 2
+            cx = (max_x * p) + win_w / 2.0
         elif effect_type == "pan_up":
-            y_center = (max_y - max_y * p) + target_h / 2
+            cy = (max_y - max_y * p) + win_h / 2.0
         elif effect_type == "pan_down":
-            y_center = (max_y * p) + target_h / 2
-        return _crop_frame(frame, x_center, y_center, target_w, target_h)
+            cy = (max_y * p) + win_h / 2.0
+
+        x1 = int(round(cx - win_w / 2.0))
+        y1 = int(round(cy - win_h / 2.0))
+        x1 = max(0, min(x1, fw - win_w))
+        y1 = max(0, min(y1, fh - win_h))
+
+        window = frame[y1:y1 + win_h, x1:x1 + win_w]
+
+        # Resize this window to the EXACT target size so output is constant.
+        pil_img = PIL.Image.fromarray(window).resize((target_w, target_h), PIL.Image.LANCZOS)
+        return np.asarray(pil_img)
 
     moving = base.transform(make_frame, apply_to=[])
-    return moving.with_effects([Resize(new_size=(target_w, target_h))]).with_duration(duration)
+    return moving.with_duration(duration)
 
 
 def _prepare_clip(
@@ -250,7 +217,7 @@ def assemble_video(
     logger.info(f"Rendering video to {output_path}...")
     final_video.write_videofile(
         str(output_path),
-        fps=24,
+        fps=30,
         codec="libx264",
         audio_codec="aac",
         threads=4,
